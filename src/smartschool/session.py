@@ -7,14 +7,18 @@ import time
 import logging
 import datetime # Added import
 import requests # Added import
+# import httpx
+# import http.cookiejar
+from http.cookiejar import LWPCookieJar
+from requests import Session
 from dataclasses import dataclass, field
 from functools import cached_property
-from http.cookiejar import LWPCookieJar
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
 from urllib.parse import urljoin
+import pyotp
+import types
 
-from requests import Session
 
 from .common import bs4_html, get_all_values_from_form
 from .exceptions import SmartSchoolAuthenticationError, SmartSchoolException # Corrected casing
@@ -29,18 +33,13 @@ logger = logging.getLogger(__name__) # Use a logger instance
 
 def _handle_cookies_and_login(func):
     @functools.wraps(func)
-    def inner(self: Smartschool, *args, **kwargs):
+    def inner(self: 'Smartschool', *args, **kwargs):
         if self.creds is None:
-            raise RuntimeError("Please start smartschool first via: `Smartschool.start(PathCredentials())`")
+            raise RuntimeError("Smartschool instance must have valid credentials.")
 
-        self._try_login() # This now handles login and ensures session validity
+        self._try_login()  # Ensures login/session validity
 
-        # _try_login now raises error if session is not valid, so we can proceed
-        resp = func(self, *args, **kwargs)
-
-        # self._session.cookies.save(ignore_discard=True) # REMOVED: _try_login saves cookies now
-
-        return resp
+        return func(self, *args, **kwargs)
 
     return inner
 
@@ -48,19 +47,67 @@ def _handle_cookies_and_login(func):
 @dataclass
 class Smartschool:
     creds: Credentials = None
-    _session: Session = field(init=False, default_factory=Session)
+    
+    # _session = httpx.Client(http2=True)
+    _session: Session = field(init=False)
     # Remove already_logged_on flag
     # already_logged_on: bool = field(init=False, default=None) # REMOVED
 
-    def __post_init__(self) -> None:
-        self._session.cookies = LWPCookieJar(self.cookie_file)
-        with contextlib.suppress(FileNotFoundError):
-            self._session.cookies.load(ignore_discard=True)
+    def __post_init__(self):
+        # logger.debug(f"Smartschool.__post_init__(): creds = {self.creds}") # Added self.creds)
+        self._session = Session()
+        if self.creds is not None:
+            self.creds.validate()
+        # Apply decorator to post and get methods *after* the decorator is defined
+        # Ensure the methods exist on the class *before* this step
+        self.post = types.MethodType(_handle_cookies_and_login(Smartschool.post), self)
+        self.get = types.MethodType(_handle_cookies_and_login(Smartschool.get), self)
+        
+    # def __post_init__(self) -> None:
+        
+    #     self._session.cookies = LWPCookieJar(self.cookie_file)
+    #     with contextlib.suppress(FileNotFoundError):
+    #         self._session.cookies.load(ignore_discard=True)
+            
+        # # Load cookies using LWPCookieJar
+        # self.cookiejar = http.cookiejarLWPCookieJar(self.cookie_file)
+        # with contextlib.suppress(FileNotFoundError):
+        #     self.cookiejar.load(ignore_discard=True, ignore_expires=True)
+        #     # Convert to httpx format
+        #     client_cookies = {}
+        #     for cookie in self.cookiejar:
+        #         client_cookies[cookie.name] = cookie.value
 
-    # Re-add create_url method
-    def create_url(self, path: str) -> str:
-        """Create a full URL from a path."""
-        return urljoin(self._url, path)
+        #     # Initialize httpx client with cookies
+        #     self._session = httpx.Client(http2=True, cookies=client_cookies)
+
+        
+        # self._session.headers.update({'Content-Type': 'application/json',
+        #                             #   "Origin": "https://ruusbroec.smartschool.be",
+        #                             #   "Referer": "https://ruusbroec.smartschool.be/",
+        #                               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+        #                               "Sec-Fetch-Dest": "empty",
+        #                               "Sec-Fetch-Mode": "cors",
+        #                               "Sec-Fetch-Site": "same-origin",
+        #                               "Sec-Fetch-User": "?1",
+        #                             #   "sec-ch-ua-platform": "Windows",
+        #                               "Accept": "application/json, text/plain, */*",
+        #                               "Accept-Encoding": "gzip, deflate, br, zstd",
+        #                               "Accept-Language": "en-US,en;q=0.9"})
+        
+        # self._session.headers.update({'Content-Type': 'application/json',
+        #                               "Origin": "https://ruusbroec.smartschool.be",
+        #                               "Referer": "https://ruusbroec.smartschool.be/",
+        #                               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+        #                               "Sec-Fetch-Dest": "empty",
+        #                               "Sec-Fetch-Mode": "cors",
+        #                               "Sec-Fetch-Site": "same-origin",
+        #                               "Sec-Fetch-User": "?1",
+        #                               "sec-ch-ua-platform": "Windows",
+        #                               "Accept": "application/json, text/plain, */*",
+        #                               "Accept-Encoding": "gzip, deflate, br, zstd",
+        #                               "Accept-Language": "en-US,en;q=0.9"})
+
 
     def _try_login(self) -> None:
         """
@@ -73,19 +120,21 @@ class Smartschool:
         # 1. Quick check: Try accessing the homepage. If it works, we're likely logged in.
         try:
             # Use allow_redirects=True to see the final destination
+            # https: follow_redirects=False
+            # check_resp = self._session.get(self.create_url("/"), follow_redirects=True)
             check_resp = self._session.get(self.create_url("/"), allow_redirects=True)
             check_resp.raise_for_status() # Check for HTTP errors
 
-            final_url = check_resp.url
+            final_url = str(check_resp.url)
             logger.debug(f"Session validity check (GET /): Status {check_resp.status_code}, Final URL: {final_url}")
 
-            if final_url.endswith("/login") or final_url.endswith("/account-verification"):
+            if final_url.endswith(("/login", "/account-verification", "/2fa")):
                 logger.debug("Session check indicates login/verification needed.")
                 # Proceed to full login flow below
             elif check_resp.status_code == 200:
                  logger.debug("Session appears to be valid based on GET /. Skipping login.")
                  # Save cookies just in case they were updated by the check
-                 self._session.cookies.save(ignore_discard=True)
+                #  self._session.cookies.save(ignore_discard=True)
                  return # Session is valid
             else:
                  logger.warning(f"Session check GET / resulted in unexpected state: Status {check_resp.status_code}, URL {final_url}")
@@ -99,9 +148,10 @@ class Smartschool:
         logger.debug("Performing full login/verification flow.")
         try:
             # Get login page first, follow redirects to see where we land
+            # login_page_resp = self._session.get(self.create_url("/login"), follow_redirects=True)
             login_page_resp = self._session.get(self.create_url("/login"), allow_redirects=True)
             login_page_resp.raise_for_status()
-            final_login_get_url = login_page_resp.url
+            final_login_get_url = str(login_page_resp.url)
             logger.debug(f"GET /login resulted in final URL: {final_login_get_url}")
 
             if final_login_get_url.endswith("/login"):
@@ -110,26 +160,52 @@ class Smartschool:
                 final_resp = self._do_login(login_page_resp)
             elif final_login_get_url.endswith("/account-verification"):
                 # GET /login redirected straight to verification
-                logger.info("GET /login redirected to verification page. Proceeding directly with verification.")
+                logger.info("GET /login redirected to basicverification page. Proceeding directly with verification.")
                 final_resp = self._complete_verification(login_page_resp)
+            elif final_login_get_url.endswith("/2fa"):
+                # GET /login redirected straight to verification
+                logger.info("GET /login redirected to 2fa verification page. Proceeding directly with verification.")
+                final_resp = self._complete_verification_2fa(login_page_resp)
             else:
                 # GET /login redirected somewhere else (likely '/', indicating already logged in)
                 logger.info(f"GET /login redirected to {final_login_get_url}. Assuming session is valid and complete.")
                 # We trust this redirect indicates success. Save cookies and return.
-                self._session.cookies.save(ignore_discard=True)
+                # self._session.cookies.save(ignore_discard=True)
                 return # Assume success based on redirect
 
             # 3. Final verification after login/verification attempt
             # (This block now only runs if we went through _do_login or _complete_verification above)
-            if final_resp.url.endswith("/login") or final_resp.url.endswith("/account-verification"):
+            if str(final_resp.url).endswith(("/login", "/account-verification", "/2fa")):
                 logger.error(f"Login/Verification process ended unexpectedly on {final_resp.url}")
                 raise SmartSchoolAuthenticationError(f"Authentication failed, ended on {final_resp.url}") # Corrected casing
             elif final_resp.status_code != 200:
-                 logger.error(f"Login/Verification process ended with status {final_resp.status_code} at {final_resp.url}")
-                 raise SmartSchoolAuthenticationError(f"Authentication failed, status {final_resp.status_code} at {final_resp.url}") # Corrected casing
+                logger.error(f"Login/Verification process ended with status {final_resp.status_code} at {final_resp.url}")
+                raise SmartSchoolAuthenticationError(f"Authentication failed, status {final_resp.status_code} at {final_resp.url}") # Corrected casing
             else:
-                 logger.debug("Login/Verification process completed successfully after _do_login/_complete_verification.")
-                 self._session.cookies.save(ignore_discard=True)
+                logger.debug("Login/Verification process completed successfully after _do_login/_complete_verification.")
+                # self._session.cookies.save(ignore_discard=True)
+                # # After request
+                # for cookie in self._session.cookies.jar:
+                #     self.cookiejar.set_cookie(http.cookiejar.Cookie(
+                #         version=0,
+                #         name=cookie.name,
+                #         value=cookie.value,
+                #         port=None,
+                #         port_specified=False,
+                #         domain=cookie.domain,
+                #         domain_specified=True,
+                #         domain_initial_dot=False,
+                #         path=cookie.path,
+                #         path_specified=True,
+                #         secure=cookie.secure,
+                #         expires=None,
+                #         discard=False,
+                #         comment=None,
+                #         comment_url=None,
+                #         rest={},
+                #         rfc2109=False
+                #     ))
+                # self.cookiejar.save(ignore_discard=True)
 
         except Exception as e:
             logger.exception("Exception during login/verification process.")
@@ -143,11 +219,12 @@ class Smartschool:
         """Helper to perform a final GET / check."""
         logger.debug("Performing _check_final_authentication (GET /)")
         try:
+            # check_resp = self._session.get(self.create_url("/"), follow_redirects=True)
             check_resp = self._session.get(self.create_url("/"), allow_redirects=True)
             check_resp.raise_for_status()
-            if check_resp.status_code == 200 and not check_resp.url.endswith(("/login", "/account-verification")):
+            if check_resp.status_code == 200 and not str(check_resp.url).endswith(("/login", "/account-verification", "/2fa")):
                 logger.debug("Final authentication check successful.")
-                self._session.cookies.save(ignore_discard=True) # Save potentially updated cookies
+                # self._session.cookies.save(ignore_discard=True) # Save potentially updated cookies
                 return True
             else:
                 logger.error(f"Final authentication check failed: Status {check_resp.status_code}, URL {check_resp.url}")
@@ -202,17 +279,22 @@ class Smartschool:
         logger.debug(f"Data prepared for login POST: {logged_data}")
 
         # POST the login form, following redirects
-        login_post_url = login_page_response.url # Post back to the same URL we got the form from
+        login_post_url = str(login_page_response.url) # Post back to the same URL we got the form from
         logger.debug(f"Posting login form to {login_post_url}")
+        # login_post_resp = self._session.post(login_post_url, data=data, follow_redirects=True)
         login_post_resp = self._session.post(login_post_url, data=data, allow_redirects=True)
         login_post_resp.raise_for_status() # Check for HTTP errors after redirects
         logger.debug(f"Login POST completed. Final URL after redirects: {login_post_resp.url}")
 
         # Check if verification is needed based on the final URL
-        if login_post_resp.url.endswith("/account-verification"):
-            logger.info("Account verification required, calling _complete_verification.")
+        if str(login_post_resp.url).endswith("/account-verification"):
+            logger.info("Account basic verification required, calling _complete_verification.")
             # Pass the response containing the verification page HTML
             return self._complete_verification(login_post_resp)
+        elif str(login_post_resp.url).endswith("/2fa"):
+            logger.info("Account 2fa verification required, calling _complete_verification_2fa.")
+            # Pass the response containing the verification page HTML
+            return self._complete_verification_2fa(login_post_resp)
         else:
             # If not verification, this is the final response from the login attempt
             return login_post_resp
@@ -224,10 +306,10 @@ class Smartschool:
         """
         logger.debug("Entering _complete_verification")
         html = bs4_html(verification_page_response)
-        current_verification_url = verification_page_response.url # URL we are currently on
+        current_verification_url = str(verification_page_response.url) # URL we are currently on
 
         # Parse verification form
-        logger.debug("Parsing verification form...")
+        logger.debug(f"Parsing verification form... {current_verification_url}")
         inputs = get_all_values_from_form(html, 'form[name="account_verification_form"]')
         if not inputs: inputs = get_all_values_from_form(html, 'form:has(input#account_verification_form__token)') # Fallback
         if not inputs:
@@ -250,10 +332,10 @@ class Smartschool:
             raise SmartSchoolAuthenticationError("Could not find security question field in verification form") # Corrected casing
 
         # Ensure birth date is present and correctly formatted
-        if not hasattr(self.creds, 'birth_date') or not self.creds.birth_date:
+        if not hasattr(self.creds, 'mfa') or not self.creds.mfa:
             raise SmartSchoolAuthenticationError("Birth date is required for verification but not provided in credentials") # Corrected casing
 
-        birth_date_str = self.creds.birth_date
+        birth_date_str = self.creds.mfa
         if isinstance(birth_date_str, datetime.date):
             birth_date_str = birth_date_str.strftime('%Y-%m-%d')
             logger.debug(f"Formatted birth date from date object to: {birth_date_str}")
@@ -271,6 +353,7 @@ class Smartschool:
 
         # POST the verification form, following redirects
         logger.info(f"POSTing verification data to {current_verification_url}")
+        # verification_post_resp = self._session.post(current_verification_url, data=verification_data, follow_redirects=True)
         verification_post_resp = self._session.post(current_verification_url, data=verification_data, allow_redirects=True)
         verification_post_resp.raise_for_status() # Check for HTTP errors after redirects
         logger.debug(f"Verification POST completed. Final URL: {verification_post_resp.url}")
@@ -278,60 +361,57 @@ class Smartschool:
         # Return the final response after the verification POST
         return verification_post_resp
 
-    @classmethod
-    def start(cls, creds: Credentials) -> Self:
-        global session
 
-        creds.validate()
-        session.creds = creds
 
-        return session
+    def _complete_verification_2fa(self, verification_page_response: Response) -> Response:
+        """
+        Completes the verification step by submitting the birth date.
+        Returns the *final* response object after the verification POST.
+        """
+        logger.debug("Entering _complete_verification_2fa")
+        
+        # check_resp = self._session.get(self.create_url("/2fa/api/v1/config"), follow_redirects=True)
+        check_resp = self._session.get(self.create_url("/2fa/api/v1/config"), allow_redirects=True)
+        check_resp.raise_for_status()
+        if check_resp.status_code == 200:
+            supported_authentication_methods = json.loads(check_resp.text)
+            if not 'googleAuthenticator' in supported_authentication_methods.get('possibleAuthenticationMechanisms',[]):
+                raise SmartSchoolAuthenticationError("Could not find supported 2fa verification method, only googleAuthenticator is supported")
+        else:
+            raise SmartSchoolAuthenticationError("Could not find supported 2fa API endpoint")
+        
+        totp = pyotp.TOTP(self.creds.mfa)
+        code = totp.now()
+        # google2fa = {'google2fa':code}
+        google2fa = '{"google2fa":"%s"}' % code        
+        # self._session.headers['Content-Type'] = "application/x-www-form-urlencoded"
+        # googleAuthenticatorResp = self._session.post(self.create_url("/2fa/api/v1/google-authenticator"), data=google2fa, follow_redirects=True)
+        googleAuthenticatorResp = self._session.post(self.create_url("/2fa/api/v1/google-authenticator"), data=google2fa, allow_redirects=True)
+        googleAuthenticatorResp.raise_for_status()
+        
+        # Return the final response after the verification POST
+        return googleAuthenticatorResp
 
-    @property
-    def cookie_file(self) -> Path:
-        return Path.cwd() / "cookies.txt"
-        
-        if not inputs:
-            # Fall back to finding by ID if name attribute is not present
-            inputs = get_all_values_from_form(html, 'form:has(input#account_verification_form__token)')
-        
-        if not inputs:
-            raise RuntimeError("Could not find verification form fields")
-        
-        # Prepare the verification data
-        verification_data = {}
-        security_question_field = None
-        
-        for input_ in inputs:
-            # The security question field typically contains "_security_question_answer" in its name
-            if "_security_question_answer" in input_["name"]:
-                security_question_field = input_["name"]
-            else:
-                # Copy all other fields with their values
-                verification_data[input_["name"]] = input_["value"]
-        
-        if not security_question_field:
-            raise RuntimeError("Could not find security question field in verification form")
-        
-        # Add the birth date to the verification data
-        if not hasattr(self.creds, 'birth_date') or not self.creds.birth_date:
-            raise RuntimeError("Birth date is required for verification but not provided in credentials")
-        
-        verification_data[security_question_field] = self.creds.birth_date
-        
-        # Submit the verification form
-        verification_url = response.url
-        verification_response = self.post(verification_url, data=verification_data)
-        
-        # Check if verification was successful
-        if self._is_verification_page(verification_response):
-            raise RuntimeError(f"Verification failed. Check that the birth date is correct and in YYYY-MM-DD format. Response text: {verification_response.text[:500]}...") # Modified existing error
+    # @classmethod
+    # def start(cls, creds: Credentials) -> Self:
+    #     global session
 
-        # --- Verification Step 4: Check URL after submitting verification ---
-        if verification_response.url.endswith("/login"):
-             raise RuntimeError("Verification submitted, but ended up back on login page. Login failed.") # Added check
+    #     creds.validate()
+    #     session.creds = creds
 
-        return verification_response
+    #     return session
+
+    # @property
+    # def cookie_file(self) -> Path:
+    #     return Path.cwd() / "cookies.txt"
+
+    def create_url(self, endpoint: str) -> str:
+        return f"{self._url}/{endpoint.lstrip('/')}"
+    
+    # Re-add create_url method
+    # def create_url(self, path: str) -> str:
+    #     """Create a full URL from a path."""
+    #     return urljoin(self._url, path)
 
     @cached_property
     def _url(self) -> str:
@@ -383,9 +463,5 @@ class Smartschool:
     def get(self, url, *args, **kwargs) -> Response:
         return self._session.get(self.create_url(url), *args, **kwargs)
 
-# Apply decorator to post and get methods *after* the decorator is defined
-# Ensure the methods exist on the class *before* this step
-Smartschool.post = _handle_cookies_and_login(Smartschool.post)
-Smartschool.get = _handle_cookies_and_login(Smartschool.get)
 
 session: Smartschool = Smartschool()

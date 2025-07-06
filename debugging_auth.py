@@ -14,6 +14,12 @@ LOG_LEVEL = logging.DEBUG
 COOKIE_FILE = Path.cwd() / "cookies.txt" # Still useful for session persistence if needed
 CREDENTIALS_FILE = Path.cwd() / "credentials.yml"
 
+# --- Setup ---
+print("Setting up logger...")
+# Basic logging setup if smartschool.logger is not available
+logging.basicConfig(level=LOG_LEVEL, format="[%(asctime)s] [%(levelname)s] %(name)s > %(message)s")
+logger = logging.getLogger("standalone_auth_test")
+
 # --- Credentials ---
 # Load credentials from YAML file
 try:

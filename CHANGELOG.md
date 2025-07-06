@@ -1,3 +1,9 @@
+# 0.3.0
+* Optional AgendaLessons fields during exams
+* AppCredentials when API called without credential file or credentials in env var
+* Extra manual examples to browse results, agenda, courses, etc
+* support 2FA parent account login
+
 # 0.2.1
 * Float dependencies.
 

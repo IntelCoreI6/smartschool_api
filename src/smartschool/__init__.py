@@ -9,7 +9,7 @@ from .courses import (
     FileItem,
     DocumentOrFolderItem
 )
-from .credentials import EnvCredentials, PathCredentials, Credentials
+from .credentials import EnvCredentials, PathCredentials, Credentials, AppCredentials
 from .exceptions import (
     SmartSchoolException, # Corrected casing
     SmartSchoolAuthenticationError, # Corrected casing
@@ -31,15 +31,17 @@ from .messages import (
     SortField,
     SortOrder,
 )
-from .objects import FutureTasks
+from .objects import FutureTasks, Course
 from .periods import Periods
 from .results import ResultDetail, Results
 from .session import Smartschool
 from .student_support import StudentSupportLinks
+from pydantic.dataclasses import rebuild_dataclass
 
 __all__ = [
     "PathCredentials",
     "EnvCredentials",
+    "AppCredentials",
     "Credentials",
     "Smartschool",
     "logger",
@@ -77,3 +79,6 @@ __all__ = [
 ]
 
 logger = setup_logger(logging.DEBUG)
+
+rebuild_dataclass(FutureTasks)
+rebuild_dataclass(Course)

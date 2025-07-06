@@ -6,12 +6,16 @@ from datetime import datetime, date, timedelta  # Added date import
 
 from ._xml_interface import SmartschoolXML_WeeklyCache
 from .objects import AgendaHour, AgendaLesson, AgendaMomentInfo
+from .session import Smartschool
 
 
 class AgendaPoster(SmartschoolXML_WeeklyCache, ABC):
     """Caches the information on a weekly basis, and posts to the mentioned URL."""
 
     _url: str = "/?module=Agenda&file=dispatcher"
+
+    def __init__(self, smartschool: Smartschool, timestamp_to_use: datetime | date | None = None):
+        super().__init__(smartschool= smartschool, timestamp_to_use=timestamp_to_use)
 
 
 class SmartschoolLessons(AgendaPoster):
@@ -50,6 +54,8 @@ class SmartschoolLessons(AgendaPoster):
     - freedayIcon
     - someSubjectsEmpty
     """
+    def __init__(self, smartschool: Smartschool, timestamp_to_use: datetime | date | None = None):
+        super().__init__(smartschool=smartschool, timestamp_to_use=timestamp_to_use)
 
     @property
     def _xpath(self) -> str:
@@ -76,16 +82,16 @@ class SmartschoolLessons(AgendaPoster):
             dt_to_use = datetime.combine(dt_to_use, datetime.min.time())
 
         now_ts = dt_to_use.timestamp()
-        in_5_days_ts = now_ts + 5 * 24 * 3600
+        in_20_days_ts = now_ts + 20 * 24 * 3600
 
         return {
             "startDateTimestamp": now_ts,  # Use the calculated timestamp
-            "endDateTimestamp": in_5_days_ts, # Use the calculated timestamp
+            "endDateTimestamp": in_20_days_ts, # Use the calculated timestamp
             "filterType": "false",
             "filterID": "false",
             "gridType": "1",
             "classID": "0",
-            "endDateTimestampOld": in_5_days_ts, # Use the calculated timestamp
+            "endDateTimestampOld": in_20_days_ts, # Use the calculated timestamp
             "forcedTeacher": "0",
             "forcedClass": "0",
             "forcedClassroom": "0",
